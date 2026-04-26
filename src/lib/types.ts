@@ -849,6 +849,7 @@ export interface EmbeddedMetaConnectionInput {
   code: string;
   wabaId: string;
   phoneNumberId: string;
+  redirectUri?: string;
 }
 
 export interface InstagramConnectionOptionsInput {
