@@ -442,6 +442,7 @@ export default function Integrations() {
         code: embeddedSession.code,
         wabaId: embeddedSession.wabaId,
         phoneNumberId: embeddedSession.phoneNumberId,
+        redirectUri: embeddedSession.redirectUri,
       });
       await refresh();
       await loadMetaSetup();
