@@ -80,6 +80,7 @@ export default function ChannelConnection() {
         code: embeddedSession.code,
         wabaId: embeddedSession.wabaId,
         phoneNumberId: embeddedSession.phoneNumberId,
+        redirectUri: embeddedSession.redirectUri,
       });
       await refresh();
       setStep(4);
