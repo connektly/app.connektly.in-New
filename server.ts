@@ -1961,6 +1961,50 @@ function normalizeMetaRedirectUriCandidate(value: string | undefined | null) {
   return trimmed;
 }
 
+function expandMetaRedirectUriCandidates(value: string | undefined | null) {
+  const normalized = normalizeMetaRedirectUriCandidate(value);
+  if (!normalized) {
+    return [];
+  }
+
+  const candidates: string[] = [normalized];
+
+  try {
+    const parsed = new URL(normalized);
+    const origin = parsed.origin;
+    const pathname = parsed.pathname || '/';
+    const search = parsed.search || '';
+    const pathnameWithoutTrailingSlash =
+      pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+    const pathnameWithTrailingSlash =
+      pathnameWithoutTrailingSlash === '/' ? '/' : `${pathnameWithoutTrailingSlash}/`;
+
+    const addCandidate = (candidate: string) => {
+      if (!candidate || candidates.includes(candidate)) {
+        return;
+      }
+
+      candidates.push(candidate);
+    };
+
+    addCandidate(`${origin}${pathname}${search}`);
+    if (search) {
+      addCandidate(`${origin}${pathname}`);
+      addCandidate(`${origin}${pathnameWithoutTrailingSlash}`);
+      addCandidate(`${origin}${pathnameWithTrailingSlash}`);
+    } else {
+      addCandidate(`${origin}${pathnameWithoutTrailingSlash}`);
+      addCandidate(`${origin}${pathnameWithTrailingSlash}`);
+    }
+    addCandidate(origin);
+    addCandidate(`${origin}/`);
+  } catch {
+    return candidates;
+  }
+
+  return candidates;
+}
+
 function buildEmbeddedSignupRedirectUriCandidates(args: {
   redirectUri?: string;
   requestReferer?: string;
@@ -1969,21 +2013,10 @@ function buildEmbeddedSignupRedirectUriCandidates(args: {
   const candidates: string[] = [];
 
   const addCandidate = (value: string | undefined | null) => {
-    const normalized = normalizeMetaRedirectUriCandidate(value);
-    if (!normalized || candidates.includes(normalized)) {
-      return;
-    }
-
-    candidates.push(normalized);
-
-    const rootUrlMatch = normalized.match(/^(https?:\/\/[^/?#]+)(\/?)$/i);
-    if (!rootUrlMatch) {
-      return;
-    }
-
-    const alternate = rootUrlMatch[2] ? rootUrlMatch[1] : `${rootUrlMatch[1]}/`;
-    if (!candidates.includes(alternate)) {
-      candidates.push(alternate);
+    for (const candidate of expandMetaRedirectUriCandidates(value)) {
+      if (!candidates.includes(candidate)) {
+        candidates.push(candidate);
+      }
     }
   };
 
@@ -2006,7 +2039,7 @@ async function exchangeEmbeddedSignupCode(
   requireMetaAppCredentials();
 
   const redirectUriCandidates = buildEmbeddedSignupRedirectUriCandidates(options);
-  const attempts = redirectUriCandidates.length > 0 ? redirectUriCandidates : [null];
+  const attempts = [null, ...redirectUriCandidates];
   let lastError: Error | null = null;
 
   for (let index = 0; index < attempts.length; index += 1) {
@@ -2036,23 +2069,30 @@ async function exchangeEmbeddedSignupCode(
       const payload = (await response.json()) as {
         error?: {
           message?: string;
+          code?: number;
+          error_subcode?: number;
         };
       };
       message = payload.error?.message || message;
+      const isRedirectUriMismatch =
+        payload.error?.code === 100 &&
+        payload.error?.error_subcode === 36008;
+
+      lastError = new Error(message);
+      const canRetry = isRedirectUriMismatch && index < attempts.length - 1;
+
+      if (canRetry) {
+        console.warn(
+          `Meta embedded signup code exchange failed for redirect URI candidate ${redirectUri || '<omitted>'}. Retrying with the next candidate.`,
+        );
+        continue;
+      }
     } catch {
       lastError = new Error(message);
       break;
     }
 
-    lastError = new Error(message);
-    const canRetry =
-      typeof message === 'string' &&
-      message.includes('redirect_uri') &&
-      index < attempts.length - 1;
-
-    if (!canRetry) {
-      break;
-    }
+    break;
   }
 
   throw lastError || new Error('Failed to exchange Meta authorization code.');
