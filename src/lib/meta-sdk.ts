@@ -23,6 +23,7 @@ interface EmbeddedSignupSession {
   code: string;
   wabaId: string;
   phoneNumberId: string;
+  redirectUri: string;
 }
 
 export interface InstagramBusinessLoginSession {
@@ -120,6 +121,7 @@ export async function beginEmbeddedSignup() {
   }
 
   await ensureMetaSdkReady();
+  const redirectUri = `${window.location.origin}${window.location.pathname}${window.location.search}`;
 
   return new Promise<EmbeddedSignupSession>((resolve, reject) => {
     let authCode: string | null = null;
@@ -132,6 +134,7 @@ export async function beginEmbeddedSignup() {
           code: authCode,
           wabaId: sessionInfo.wabaId,
           phoneNumberId: sessionInfo.phoneNumberId,
+          redirectUri,
         });
       }
     };
