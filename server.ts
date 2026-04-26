@@ -1939,22 +1939,97 @@ async function metaRequestDetailed<T>({
   return (await response.json()) as T;
 }
 
-async function exchangeEmbeddedSignupCode(code: string, requestOrigin: string | undefined) {
-  requireMetaAppCredentials();
-
-  const url = new URL(`https://graph.facebook.com/${graphVersion}/oauth/access_token`);
-  url.searchParams.set('client_id', metaAppId);
-  url.searchParams.set('client_secret', metaAppSecret);
-  url.searchParams.set('code', code);
-
-  const redirectUri = metaRedirectUri || requestOrigin;
-  if (redirectUri) {
-    url.searchParams.set('redirect_uri', redirectUri);
+function normalizeMetaRedirectUriCandidate(value: string | undefined | null) {
+  if (typeof value !== 'string') {
+    return null;
   }
 
-  const response = await fetch(url);
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
 
-  if (!response.ok) {
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function buildEmbeddedSignupRedirectUriCandidates(args: {
+  redirectUri?: string;
+  requestReferer?: string;
+  requestOrigin?: string;
+}) {
+  const candidates: string[] = [];
+
+  const addCandidate = (value: string | undefined | null) => {
+    const normalized = normalizeMetaRedirectUriCandidate(value);
+    if (!normalized || candidates.includes(normalized)) {
+      return;
+    }
+
+    candidates.push(normalized);
+
+    const rootUrlMatch = normalized.match(/^(https?:\/\/[^/?#]+)(\/?)$/i);
+    if (!rootUrlMatch) {
+      return;
+    }
+
+    const alternate = rootUrlMatch[2] ? rootUrlMatch[1] : `${rootUrlMatch[1]}/`;
+    if (!candidates.includes(alternate)) {
+      candidates.push(alternate);
+    }
+  };
+
+  addCandidate(args.redirectUri);
+  addCandidate(args.requestReferer);
+  addCandidate(metaRedirectUri);
+  addCandidate(args.requestOrigin);
+
+  return candidates;
+}
+
+async function exchangeEmbeddedSignupCode(
+  code: string,
+  options: {
+    redirectUri?: string;
+    requestReferer?: string;
+    requestOrigin?: string;
+  },
+) {
+  requireMetaAppCredentials();
+
+  const redirectUriCandidates = buildEmbeddedSignupRedirectUriCandidates(options);
+  const attempts = redirectUriCandidates.length > 0 ? redirectUriCandidates : [null];
+  let lastError: Error | null = null;
+
+  for (let index = 0; index < attempts.length; index += 1) {
+    const redirectUri = attempts[index];
+    const url = new URL(`https://graph.facebook.com/${graphVersion}/oauth/access_token`);
+    url.searchParams.set('client_id', metaAppId);
+    url.searchParams.set('client_secret', metaAppSecret);
+    url.searchParams.set('code', code);
+
+    if (redirectUri) {
+      url.searchParams.set('redirect_uri', redirectUri);
+    }
+
+    const response = await fetch(url);
+
+    if (response.ok) {
+      const payload = (await response.json()) as {
+        access_token: string;
+      };
+
+      return payload.access_token;
+    }
+
     let message = `Failed to exchange Meta authorization code (${response.status}).`;
 
     try {
@@ -1965,17 +2040,22 @@ async function exchangeEmbeddedSignupCode(code: string, requestOrigin: string | 
       };
       message = payload.error?.message || message;
     } catch {
-      throw new Error(message);
+      lastError = new Error(message);
+      break;
     }
 
-    throw new Error(message);
+    lastError = new Error(message);
+    const canRetry =
+      typeof message === 'string' &&
+      message.includes('redirect_uri') &&
+      index < attempts.length - 1;
+
+    if (!canRetry) {
+      break;
+    }
   }
 
-  const payload = (await response.json()) as {
-    access_token: string;
-  };
-
-  return payload.access_token;
+  throw lastError || new Error('Failed to exchange Meta authorization code.');
 }
 
 async function exchangeInstagramLongLivedAccessToken(accessToken: string) {
@@ -8756,18 +8836,23 @@ app.post('/api/meta/connect/manual', async (req, res) => {
 
 app.post('/api/meta/connect/embedded', async (req, res) => {
   try {
-    const { code, setupType, wabaId, phoneNumberId } = req.body as {
+    const { code, setupType, wabaId, phoneNumberId, redirectUri } = req.body as {
       code: string;
       setupType: string;
       wabaId: string;
       phoneNumberId: string;
+      redirectUri?: string;
     };
 
     if (!code || !wabaId || !phoneNumberId || !setupType) {
       throw new Error('code, setupType, wabaId, and phoneNumberId are required.');
     }
 
-    const accessToken = await exchangeEmbeddedSignupCode(code, req.get('origin') || undefined);
+    const accessToken = await exchangeEmbeddedSignupCode(code, {
+      redirectUri,
+      requestReferer: req.get('referer') || undefined,
+      requestOrigin: req.get('origin') || undefined,
+    });
     const [phone, waba] = await Promise.all([
       fetchPhoneNumber(accessToken, phoneNumberId),
       fetchWaba(accessToken, wabaId),
